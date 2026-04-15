@@ -35,7 +35,6 @@ async def fs(method: str, path: str, body: dict = None):
         return r.json()
 
 async def fs_raw(method: str, path: str, body: dict = None):
-    """Retourne le JSON brut complet sans traitement."""
     url = f"https://{FS_DOMAIN}/api/v2/{path.lstrip('/')}"
     headers = {
         "Authorization": f"Basic {AUTH}",
@@ -67,18 +66,31 @@ async def list_tools():
         # ── TICKETS ──────────────────────────────────────────────────────────
         Tool(
             name="list_tickets",
-            description="Lister les tickets Freshservice avec tous leurs champs. Filtrable par agent, statut, priorité, workspace.",
+            description="Lister les tickets Freshservice avec tous leurs champs. Filtrable par statut, workspace.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "filter":        {"type": "string",  "description": "new_and_my_open | watching | spam | deleted (défaut: new_and_my_open)"},
-                    "agent_id":      {"type": "integer", "description": "ID de l'agent assigné"},
                     "requester_id":  {"type": "integer", "description": "ID du demandeur"},
                     "workspace_id":  {"type": "integer", "description": "ID du workspace"},
                     "page":          {"type": "integer", "description": "Numéro de page (défaut: 1)"},
                     "per_page":      {"type": "integer", "description": "Tickets par page, max 100 (défaut: 30)"},
                     "updated_since": {"type": "string",  "description": "Depuis cette date ISO ex: 2026-04-01T00:00:00Z"}
                 }
+            }
+        ),
+        Tool(
+            name="search_tickets_by_agent",
+            description="Rechercher tous les tickets assignés à un agent spécifique, avec filtre optionnel par statut. Utilise la recherche avancée Freshservice.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "agent_id": {"type": "integer", "description": "ID de l'agent (responder_id)"},
+                    "status":   {"type": "integer", "description": "2=Ouvert 3=En attente (RDV Planifié) 4=Résolu 5=Fermé"},
+                    "page":     {"type": "integer", "description": "Numéro de page (défaut: 1)"},
+                    "per_page": {"type": "integer", "description": "max 100 (défaut: 100)"}
+                },
+                "required": ["agent_id"]
             }
         ),
         Tool(
@@ -264,7 +276,7 @@ async def list_tools():
         # ── STATS ────────────────────────────────────────────────────────────
         Tool(
             name="get_stats",
-            description="Statistiques globales : tickets par statut, par priorité, par agent.",
+            description="Statistiques globales : tickets par statut, par priorité, par agent, par workspace.",
             inputSchema={"type": "object", "properties": {}}
         ),
     ]
@@ -282,26 +294,75 @@ async def call_tool(name: str, arguments: dict):
             params = f"filter={f}&page={p}&per_page={pp}&order_by=created_at&order_type=desc&include=requester,stats,tags"
             if arguments.get("workspace_id"):
                 params += f"&workspace_id={arguments['workspace_id']}"
+            if arguments.get("requester_id"):
+                params += f"&requester_id={arguments['requester_id']}"
             if arguments.get("updated_since"):
                 params += f"&updated_since={arguments['updated_since']}"
             data    = await fs("GET", f"tickets?{params}")
-            tickets = data.get("tickets", [])
+            tickets = data.get("tickets") or []
             if not tickets:
                 return [TextContent(type="text", text="Aucun ticket trouvé.")]
             lines = []
             for t in tickets:
-                req   = t.get("requester") or {}
-                stats = t.get("stats") or {}
-                tags  = fmt(t.get("tags", []))
-                agent_id = t.get("responder_id") or t.get("agent_id") or "—"
+                req  = t.get("requester") or {}
+                tags = fmt(t.get("tags", []))
                 lines.append(
-                    f"#{t['id']} | {STATUS.get(t['status'],'?')} | {PRIO.get(t['priority'],'?')} | "
-                    f"Agent:{agent_id} | "
+                    f"#{t['id']} | {STATUS.get(t.get('status'),'?')} | {PRIO.get(t.get('priority'),'?')} | "
+                    f"Agent:{fmt(t.get('responder_id'))} | "
                     f"Demandeur:{req.get('name', fmt(t.get('requester_id')))} | "
                     f"Workspace:{fmt(t.get('workspace_id'))} | "
-                    f"Tags:{tags} | {t['subject']} | {safe_date(t.get('created_at'),10)}"
+                    f"Tags:{tags} | {t.get('subject','')} | {safe_date(t.get('created_at'),10)}"
                 )
             return [TextContent(type="text", text=f"Total : {len(tickets)} tickets\n{'─'*60}\n" + "\n".join(lines))]
+
+        # ── search_tickets_by_agent ───────────────────────────────────────────
+        elif name == "search_tickets_by_agent":
+            agent_id = arguments["agent_id"]
+            status   = arguments.get("status")
+            p        = arguments.get("page", 1)
+            pp       = arguments.get("per_page", 100)
+
+            # Construction de la requête de recherche avancée
+            query = f'responder_id:{agent_id}'
+            if status:
+                query += f' AND status:{status}'
+
+            try:
+                data    = await fs("GET", f'tickets/filter?query="{query}"&page={p}&per_page={pp}&include=requester')
+                tickets = data.get("tickets") or []
+            except Exception as e1:
+                # Fallback : parcourir tous les tickets et filtrer
+                try:
+                    all_tickets = []
+                    for page in range(1, 6):
+                        d = await fs("GET", f"tickets?filter=new_and_my_open&page={page}&per_page=100&include=requester")
+                        batch = d.get("tickets") or []
+                        if not batch:
+                            break
+                        all_tickets.extend(batch)
+                    tickets = [t for t in all_tickets if str(t.get("responder_id")) == str(agent_id)]
+                    if status:
+                        tickets = [t for t in tickets if t.get("status") == status]
+                except Exception as e2:
+                    return [TextContent(type="text", text=f"Erreur recherche : {str(e2)}")]
+
+            if not tickets:
+                status_label = STATUS.get(status, str(status)) if status else "tous statuts"
+                return [TextContent(type="text", text=f"Aucun ticket trouvé pour l'agent {agent_id} ({status_label}).")]
+
+            lines = []
+            for t in tickets:
+                req = t.get("requester") or {}
+                lines.append(
+                    f"#{t['id']} | {STATUS.get(t.get('status'),'?')} | {PRIO.get(t.get('priority'),'?')} | "
+                    f"Workspace:{fmt(t.get('workspace_id'))} | "
+                    f"Demandeur:{req.get('name', fmt(t.get('requester_id')))} | "
+                    f"{t.get('subject','')} | {safe_date(t.get('created_at'),10)}"
+                )
+            status_label = STATUS.get(status, str(status)) if status else "tous statuts"
+            return [TextContent(type="text", text=
+                f"Agent {agent_id} — {status_label} — {len(tickets)} ticket(s) :\n{'─'*60}\n" + "\n".join(lines)
+            )]
 
         # ── get_ticket ────────────────────────────────────────────────────────
         elif name == "get_ticket":
@@ -348,7 +409,7 @@ async def call_tool(name: str, arguments: dict):
 
         # ── get_ticket_raw ────────────────────────────────────────────────────
         elif name == "get_ticket_raw":
-            raw = await fs_raw("GET", f"tickets/{arguments['id']}?include=requester,stats,tags,conversations")
+            raw    = await fs_raw("GET", f"tickets/{arguments['id']}?include=requester,stats,tags,conversations")
             parsed = json.loads(raw)
             pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
             return [TextContent(type="text", text=f"JSON BRUT — Ticket #{arguments['id']} :\n\n{pretty[:4000]}")]
@@ -434,17 +495,20 @@ async def call_tool(name: str, arguments: dict):
 
         # ── list_workspaces ───────────────────────────────────────────────────
         elif name == "list_workspaces":
-            data = await fs("GET", "workspaces")
-            workspaces = data.get("workspaces") or []
-            if not workspaces:
-                raw = await fs_raw("GET", "workspaces")
-                return [TextContent(type="text", text=f"Réponse brute workspaces :\n{raw[:1000]}")]
-            lines = [
-                f"#{w.get('id')} | {w.get('name','?')} | Actif:{fmt(w.get('active'))} | "
-                f"Description:{fmt(w.get('description'))}"
-                for w in workspaces
-            ]
-            return [TextContent(type="text", text=f"{len(workspaces)} workspace(s) :\n" + "\n".join(lines))]
+            try:
+                data       = await fs("GET", "workspaces")
+                workspaces = data.get("workspaces") or []
+                if not workspaces:
+                    raw = await fs_raw("GET", "workspaces")
+                    return [TextContent(type="text", text=f"Réponse brute :\n{raw[:1000]}")]
+                lines = [
+                    f"#{w.get('id')} | {w.get('name','?')} | Actif:{fmt(w.get('active'))} | "
+                    f"Description:{fmt(w.get('description'))}"
+                    for w in workspaces
+                ]
+                return [TextContent(type="text", text=f"{len(workspaces)} workspace(s) :\n" + "\n".join(lines))]
+            except Exception as e:
+                return [TextContent(type="text", text=f"Erreur workspaces : {str(e)}")]
 
         # ── list_contacts ─────────────────────────────────────────────────────
         elif name == "list_contacts":
@@ -616,10 +680,10 @@ async def call_tool(name: str, arguments: dict):
                 p  = PRIO.get(t.get('priority'), str(t.get('priority')))
                 a  = str(t.get('responder_id') or 'Non assigné')
                 ws = str(t.get('workspace_id') or '—')
-                by_status[s]    = by_status.get(s, 0) + 1
-                by_priority[p]  = by_priority.get(p, 0) + 1
-                by_agent[a]     = by_agent.get(a, 0) + 1
-                by_workspace[ws]= by_workspace.get(ws, 0) + 1
+                by_status[s]     = by_status.get(s, 0) + 1
+                by_priority[p]   = by_priority.get(p, 0) + 1
+                by_agent[a]      = by_agent.get(a, 0) + 1
+                by_workspace[ws] = by_workspace.get(ws, 0) + 1
             lines = [
                 f"{'═'*50}",
                 "STATISTIQUES FRESHSERVICE",
@@ -661,8 +725,8 @@ async def health(request: Request):
         "status":   "ok",
         "domain":   FS_DOMAIN,
         "auth_set": bool(FS_API_KEY),
-        "tools":    19,
-        "version":  "3.0"
+        "tools":    20,
+        "version":  "4.0"
     })
 
 app = Starlette(
