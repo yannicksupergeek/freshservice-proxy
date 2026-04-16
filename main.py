@@ -27,7 +27,9 @@ STATUS = {
 PRIO      = {1:"Faible", 2:"Moyen", 3:"Élevé", 4:"Urgent"}
 SOURCE    = {1:"Email", 2:"Portail", 3:"Téléphone", 7:"Chat", 8:"Mattermost", 9:"Dexem"}
 WORKSPACE = {2:"B2C/Pro", 3:"Protected", 6:"B2B"}
-AGENTS    = {
+WORKSPACE_IDS = [2, 3, 6]
+
+AGENTS = {
     37002903654:"Alice",   37002930870:"Anaïs",  37002903655:"Axel",
     37002903652:"Cedric",  37000266099:"James",  37002960378:"Jason",
     37002903656:"Jessica", 37002933996:"Khadijah",37003614701:"Laeticia",
@@ -107,50 +109,56 @@ def safe_date(val, length=19):
 # ── Recherche tickets par agent ───────────────────────────────────────────────
 async def fetch_all_tickets_for_agent(agent_id: int, status_filter: int = None) -> list:
     """
-    Stratégie multi-niveaux pour trouver tous les tickets d'un agent,
-    tous workspaces et tous statuts confondus.
+    Stratégie multi-niveaux pour trouver tous les tickets d'un agent
+    sur TOUS les workspaces (B2C/Pro, Protected, B2B).
+
+    Niveau 1 : recherche avancée /tickets/filter avec workspace_id pour chaque workspace
+    Niveau 2 : fallback filtre new_and_my_open + watching sans workspace (workspace défaut)
     """
     seen    = set()
     results = []
 
-    # 1. Recherche avancée avec query encodée — plusieurs variantes de syntaxe
-    base_q = f"responder_id:{agent_id}"
+    # ── Niveau 1 : recherche avancée par workspace ────────────────────────────
+    query_base = f"responder_id:{agent_id}"
     if status_filter:
-        base_q += f" AND status:{status_filter}"
+        query_base += f" AND status:{status_filter}"
+    encoded = urllib.parse.quote(f'"{query_base}"')
 
-    for q in [base_q, f'"{base_q}"', f"({base_q})"]:
-        try:
-            encoded = urllib.parse.quote(q)
-            data    = await fs("GET", f"tickets/filter?query={encoded}&per_page=100&include=requester")
-            for t in (data.get("tickets") or []):
-                if t["id"] not in seen:
-                    seen.add(t["id"])
-                    results.append(t)
-            if results:
-                return results
-        except Exception:
-            continue
-
-    # 2. Fallback : parcourir new_and_my_open + watching sur toutes les pages
-    #    L'API ignore workspace_id dans ces filtres donc on cherche globalement
-    for filtre in ["new_and_my_open", "watching"]:
-        for page in range(1, 21):  # jusqu'à 2000 tickets
+    for ws_id in WORKSPACE_IDS:
+        for page in range(1, 6):
             try:
-                d     = await fs("GET", f"tickets?filter={filtre}&page={page}&per_page=100&include=requester")
+                path = f"tickets/filter?query={encoded}&workspace_id={ws_id}&page={page}&per_page=100&include=requester"
+                data = await fs("GET", path)
+                batch = data.get("tickets") or []
+                if not batch:
+                    break
+                for t in batch:
+                    if t["id"] not in seen:
+                        seen.add(t["id"])
+                        results.append(t)
+            except Exception:
+                break
+
+    if results:
+        return results
+
+    # ── Niveau 2 : fallback filtre standard (workspace défaut uniquement) ─────
+    for filtre in ["new_and_my_open", "watching"]:
+        for page in range(1, 21):
+            try:
+                d = await fs("GET", f"tickets?filter={filtre}&page={page}&per_page=100&include=requester")
                 batch = d.get("tickets") or []
                 if not batch:
                     break
-                found_any = False
                 for t in batch:
                     if str(t.get("responder_id")) == str(agent_id):
                         if t["id"] not in seen:
                             seen.add(t["id"])
                             results.append(t)
-                            found_any = True
             except Exception:
                 break
 
-    # 3. Filtre final par statut si demandé
+    # ── Filtre final par statut ───────────────────────────────────────────────
     if status_filter:
         results = [t for t in results if t.get("status") == status_filter]
 
@@ -175,8 +183,9 @@ async def list_tools():
 
         Tool(name="search_tickets_by_agent",
              description=(
-                 "Rechercher TOUS les tickets d'un agent sur tous les workspaces et tous les statuts "
-                 "(y compris RDV Planifié code 6, Contact injoignable 7/8, Attente tiers 9, Nouveau 10). "
+                 "Rechercher TOUS les tickets d'un agent sur tous les workspaces "
+                 "(B2C/Pro, Protected, B2B) et tous les statuts "
+                 "(y compris RDV Planifié=6, CI1=7, CI2=8, Attente tiers=9, Nouveau=10). "
                  "Agents: Alice=37002903654 Anaïs=37002930870 Axel=37002903655 "
                  "Cedric=37002903652 James=37000266099 Jason=37002960378 "
                  "Jessica=37002903656 Léa=37002903651 Sam=37002903650 "
@@ -184,7 +193,7 @@ async def list_tools():
              ),
              inputSchema={"type":"object","required":["agent_id"],"properties":{
                  "agent_id":{"type":"integer","description":"ID de l'agent"},
-                 "status":  {"type":"integer","description":"Optionnel: 2=Ouvert 3=En attente 4=Résolu 5=Fermé 6=RDV Planifié 7=CI1 8=CI2 9=Attente tiers 10=Nouveau"},
+                 "status":  {"type":"integer","description":"Optionnel — code statut pour filtrer"},
              }}),
 
         Tool(name="get_ticket",
@@ -276,6 +285,7 @@ async def list_tools():
              description="Statistiques globales par statut, priorité, agent, workspace.",
              inputSchema={"type":"object","properties":{}}),
     ]
+
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
@@ -414,7 +424,7 @@ async def call_tool(name: str, arguments: dict):
         elif name == "search_tickets":
             q = arguments["query"]
             try:
-                encoded = urllib.parse.quote(q)
+                encoded = urllib.parse.quote(f'"{q}"')
                 data    = await fs("GET", f"tickets/filter?query={encoded}&per_page=30&include=requester")
                 tickets = data.get("tickets") or []
             except Exception:
@@ -523,7 +533,7 @@ async def call_tool(name: str, arguments: dict):
             for a in agents:
                 aid    = a.get('id')
                 prenom = AGENTS.get(aid, f"{a.get('first_name','')} {a.get('last_name','')}".strip())
-                poste  = POSTES.get(prenom, "—")
+                poste  = POSTES.get(prenom,"—")
                 lines.append(f"#{aid} | {prenom} | {a.get('email','—')} | {poste} | Dispo:{fmt(a.get('available'))}")
             return [TextContent(type="text", text="\n".join(lines))]
 
@@ -653,6 +663,7 @@ async def call_tool(name: str, arguments: dict):
     except Exception as e:
         return [TextContent(type="text", text=f"Erreur : {str(e)}")]
 
+
 # ── Transport SSE ─────────────────────────────────────────────────────────────
 sse = SseServerTransport("/messages/")
 
@@ -663,7 +674,7 @@ async def handle_sse(request: Request):
 async def health(request: Request):
     return JSONResponse({
         "status":"ok","domain":FS_DOMAIN,
-        "auth_set":bool(FS_API_KEY),"tools":20,"version":"8.0"
+        "auth_set":bool(FS_API_KEY),"tools":20,"version":"9.0"
     })
 
 app = Starlette(
