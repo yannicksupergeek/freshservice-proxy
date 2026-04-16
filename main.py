@@ -17,9 +17,59 @@ FS_DOMAIN  = os.environ.get("FS_DOMAIN", "")
 FS_API_KEY = os.environ.get("FS_API_KEY", "")
 AUTH       = base64.b64encode(f"{FS_API_KEY}:X".encode()).decode()
 
-STATUS = {2:"Ouvert", 3:"En attente", 4:"Résolu", 5:"Fermé"}
-PRIO   = {1:"Faible", 2:"Moyen", 3:"Élevé", 4:"Urgent"}
-SOURCE = {1:"Email", 2:"Portail", 3:"Téléphone", 7:"Chat", 8:"Mattermost", 9:"Dexem"}
+# ── Référentiel Supergeek ─────────────────────────────────────────────────────
+STATUS = {
+    2:  "Ouvert",
+    3:  "En attente",
+    4:  "Résolu",
+    5:  "Fermé",
+    6:  "RDV Planifié",
+    7:  "Contact injoignable 1",
+    8:  "Contact injoignable 2",
+    9:  "Attente tiers",
+    10: "Nouveau",
+}
+
+PRIO = {
+    1: "Faible",
+    2: "Moyen",
+    3: "Élevé",
+    4: "Urgent",
+}
+
+SOURCE = {
+    1: "Email",
+    2: "Portail",
+    3: "Téléphone",
+    7: "Chat",
+    8: "Mattermost",
+    9: "Dexem",
+}
+
+WORKSPACE = {
+    2: "B2C/Pro",
+    3: "Protected",
+    6: "B2B",
+}
+
+AGENTS = {
+    37002903654: "Alice",
+    37002930870: "Anaïs",
+    37002903655: "Axel",
+    37002903652: "Cedric",
+    37000266099: "James",
+    37002960378: "Jason",
+    37002903656: "Jessica",
+    37002933996: "Khadijah",
+    37003614701: "Laeticia",
+    37002903651: "Léa",
+    37000265923: "Michel",
+    37002903650: "Sam",
+    37002903653: "Samuel",
+    37002903657: "Shelly",
+    37003554098: "Superviseur",
+    37000266010: "Yannick",
+}
 
 # ── Client Freshservice ───────────────────────────────────────────────────────
 async def fs(method: str, path: str, body: dict = None):
@@ -52,6 +102,26 @@ def fmt(val):
     if isinstance(val, list): return ", ".join(str(v) for v in val) if val else "—"
     return str(val)
 
+def fmt_agent(agent_id):
+    if not agent_id: return "—"
+    return AGENTS.get(int(agent_id), f"Agent#{agent_id}")
+
+def fmt_status(code):
+    if not code: return "—"
+    return STATUS.get(int(code), f"Statut#{code}")
+
+def fmt_prio(code):
+    if not code: return "—"
+    return PRIO.get(int(code), f"Priorité#{code}")
+
+def fmt_workspace(code):
+    if not code: return "—"
+    return WORKSPACE.get(int(code), f"Workspace#{code}")
+
+def fmt_source(code):
+    if not code: return "—"
+    return SOURCE.get(int(code), f"Source#{code}")
+
 def safe_date(val, length=19):
     if not val: return "—"
     return str(val)[:length]
@@ -66,13 +136,13 @@ async def list_tools():
         # ── TICKETS ──────────────────────────────────────────────────────────
         Tool(
             name="list_tickets",
-            description="Lister les tickets Freshservice avec tous leurs champs. Filtrable par statut, workspace.",
+            description="Lister les tickets Freshservice avec tous leurs champs lisibles (noms agents, statuts, workspaces).",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "filter":        {"type": "string",  "description": "new_and_my_open | watching | spam | deleted (défaut: new_and_my_open)"},
                     "requester_id":  {"type": "integer", "description": "ID du demandeur"},
-                    "workspace_id":  {"type": "integer", "description": "ID du workspace"},
+                    "workspace_id":  {"type": "integer", "description": "2=B2C/Pro 3=Protected 6=B2B"},
                     "page":          {"type": "integer", "description": "Numéro de page (défaut: 1)"},
                     "per_page":      {"type": "integer", "description": "Tickets par page, max 100 (défaut: 30)"},
                     "updated_since": {"type": "string",  "description": "Depuis cette date ISO ex: 2026-04-01T00:00:00Z"}
@@ -81,12 +151,23 @@ async def list_tools():
         ),
         Tool(
             name="search_tickets_by_agent",
-            description="Rechercher tous les tickets assignés à un agent spécifique, avec filtre optionnel par statut. Utilise la recherche avancée Freshservice.",
+            description=(
+                "Rechercher tous les tickets assignés à un agent par son nom ou ID, "
+                "avec filtre optionnel par statut. "
+                "Agents: Alice=37002903654, Anaïs=37002930870, Axel=37002903655, "
+                "Cedric=37002903652, James=37000266099, Jason=37002960378, "
+                "Jessica=37002903656, Khadijah=37002933996, Laeticia=37003614701, "
+                "Léa=37002903651, Michel=37000265923, Sam=37002903650, "
+                "Samuel=37002903653, Shelly=37002903657, Yannick=37000266010. "
+                "Statuts: 2=Ouvert 3=En attente 4=Résolu 5=Fermé "
+                "6=RDV Planifié 7=Contact injoignable 1 8=Contact injoignable 2 "
+                "9=Attente tiers 10=Nouveau."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "agent_id": {"type": "integer", "description": "ID de l'agent (responder_id)"},
-                    "status":   {"type": "integer", "description": "2=Ouvert 3=En attente (RDV Planifié) 4=Résolu 5=Fermé"},
+                    "agent_id": {"type": "integer", "description": "ID de l'agent"},
+                    "status":   {"type": "integer", "description": "Code du statut (voir description)"},
                     "page":     {"type": "integer", "description": "Numéro de page (défaut: 1)"},
                     "per_page": {"type": "integer", "description": "max 100 (défaut: 100)"}
                 },
@@ -95,7 +176,7 @@ async def list_tools():
         ),
         Tool(
             name="get_ticket",
-            description="Obtenir TOUS les champs d'un ticket : description, champs personnalisés, tags, SLA, stats, workspace.",
+            description="Obtenir TOUS les champs d'un ticket avec labels lisibles (agent, statut, workspace, champs personnalisés).",
             inputSchema={
                 "type": "object",
                 "properties": {"id": {"type": "integer", "description": "ID du ticket"}},
@@ -104,7 +185,7 @@ async def list_tools():
         ),
         Tool(
             name="get_ticket_raw",
-            description="Retourner le JSON brut complet d'un ticket tel que renvoyé par l'API Freshservice (tous les champs sans exception).",
+            description="Retourner le JSON brut complet d'un ticket tel que renvoyé par l'API (tous les champs sans exception).",
             inputSchema={
                 "type": "object",
                 "properties": {"id": {"type": "integer", "description": "ID du ticket"}},
@@ -144,13 +225,13 @@ async def list_tools():
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "subject":       {"type": "string"},
-                    "description":   {"type": "string"},
-                    "email":         {"type": "string"},
-                    "priority":      {"type": "integer", "description": "1=Faible 2=Moyen 3=Élevé 4=Urgent"},
-                    "status":        {"type": "integer", "description": "2=Ouvert 3=En attente 4=Résolu 5=Fermé"},
-                    "responder_id":  {"type": "integer", "description": "ID de l'agent à assigner"},
-                    "workspace_id":  {"type": "integer", "description": "ID du workspace"}
+                    "subject":      {"type": "string"},
+                    "description":  {"type": "string"},
+                    "email":        {"type": "string"},
+                    "priority":     {"type": "integer", "description": "1=Faible 2=Moyen 3=Élevé 4=Urgent"},
+                    "status":       {"type": "integer", "description": "2=Ouvert 3=En attente 4=Résolu 5=Fermé 6=RDV Planifié"},
+                    "responder_id": {"type": "integer", "description": "ID de l'agent à assigner"},
+                    "workspace_id": {"type": "integer", "description": "2=B2C/Pro 3=Protected 6=B2B"}
                 },
                 "required": ["subject", "email"]
             }
@@ -161,12 +242,12 @@ async def list_tools():
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "id":            {"type": "integer"},
-                    "status":        {"type": "integer", "description": "2=Ouvert 3=En attente 4=Résolu 5=Fermé"},
-                    "priority":      {"type": "integer", "description": "1=Faible 2=Moyen 3=Élevé 4=Urgent"},
-                    "responder_id":  {"type": "integer", "description": "ID du nouvel agent assigné"},
-                    "note":          {"type": "string",  "description": "Note publique"},
-                    "private_note":  {"type": "string",  "description": "Note privée (agents seulement)"}
+                    "id":           {"type": "integer"},
+                    "status":       {"type": "integer", "description": "2=Ouvert 3=En attente 4=Résolu 5=Fermé 6=RDV Planifié 7=CI1 8=CI2 9=Attente tiers 10=Nouveau"},
+                    "priority":     {"type": "integer", "description": "1=Faible 2=Moyen 3=Élevé 4=Urgent"},
+                    "responder_id": {"type": "integer", "description": "ID du nouvel agent assigné"},
+                    "note":         {"type": "string",  "description": "Note publique"},
+                    "private_note": {"type": "string",  "description": "Note privée (agents seulement)"}
                 },
                 "required": ["id"]
             }
@@ -175,7 +256,7 @@ async def list_tools():
         # ── WORKSPACES ───────────────────────────────────────────────────────
         Tool(
             name="list_workspaces",
-            description="Lister tous les workspaces Freshservice.",
+            description="Lister les workspaces Freshservice (2=B2C/Pro, 3=Protected, 6=B2B).",
             inputSchema={"type": "object", "properties": {}}
         ),
 
@@ -205,7 +286,7 @@ async def list_tools():
         # ── AGENTS ───────────────────────────────────────────────────────────
         Tool(
             name="list_agents",
-            description="Lister tous les agents avec nom, email, disponibilité, groupes.",
+            description="Lister tous les agents avec nom, email, disponibilité. Agents connus: Alice, Anaïs, Axel, Cedric, James, Jason, Jessica, Khadijah, Laeticia, Léa, Michel, Sam, Samuel, Shelly, Superviseur, Yannick.",
             inputSchema={"type": "object", "properties": {}}
         ),
         Tool(
@@ -304,14 +385,14 @@ async def call_tool(name: str, arguments: dict):
                 return [TextContent(type="text", text="Aucun ticket trouvé.")]
             lines = []
             for t in tickets:
-                req  = t.get("requester") or {}
-                tags = fmt(t.get("tags", []))
+                req = t.get("requester") or {}
                 lines.append(
-                    f"#{t['id']} | {STATUS.get(t.get('status'),'?')} | {PRIO.get(t.get('priority'),'?')} | "
-                    f"Agent:{fmt(t.get('responder_id'))} | "
-                    f"Demandeur:{req.get('name', fmt(t.get('requester_id')))} | "
-                    f"Workspace:{fmt(t.get('workspace_id'))} | "
-                    f"Tags:{tags} | {t.get('subject','')} | {safe_date(t.get('created_at'),10)}"
+                    f"#{t['id']} | {fmt_status(t.get('status'))} | {fmt_prio(t.get('priority'))} | "
+                    f"Agent:{fmt_agent(t.get('responder_id'))} | "
+                    f"Créateur:{fmt_agent(t.get('custom_fields', {}).get('lf_createur_du_ticket'))} | "
+                    f"Workspace:{fmt_workspace(t.get('workspace_id'))} | "
+                    f"Demandeur:{req.get('name', '—')} | "
+                    f"{t.get('subject','')} | {safe_date(t.get('created_at'),10)}"
                 )
             return [TextContent(type="text", text=f"Total : {len(tickets)} tickets\n{'─'*60}\n" + "\n".join(lines))]
 
@@ -322,7 +403,6 @@ async def call_tool(name: str, arguments: dict):
             p        = arguments.get("page", 1)
             pp       = arguments.get("per_page", 100)
 
-            # Construction de la requête de recherche avancée
             query = f'responder_id:{agent_id}'
             if status:
                 query += f' AND status:{status}'
@@ -330,38 +410,39 @@ async def call_tool(name: str, arguments: dict):
             try:
                 data    = await fs("GET", f'tickets/filter?query="{query}"&page={p}&per_page={pp}&include=requester')
                 tickets = data.get("tickets") or []
-            except Exception as e1:
-                # Fallback : parcourir tous les tickets et filtrer
-                try:
-                    all_tickets = []
-                    for page in range(1, 6):
-                        d = await fs("GET", f"tickets?filter=new_and_my_open&page={page}&per_page=100&include=requester")
-                        batch = d.get("tickets") or []
-                        if not batch:
-                            break
-                        all_tickets.extend(batch)
-                    tickets = [t for t in all_tickets if str(t.get("responder_id")) == str(agent_id)]
-                    if status:
-                        tickets = [t for t in tickets if t.get("status") == status]
-                except Exception as e2:
-                    return [TextContent(type="text", text=f"Erreur recherche : {str(e2)}")]
+            except Exception:
+                # Fallback : parcourir toutes les pages
+                tickets = []
+                for page in range(1, 11):
+                    d = await fs("GET", f"tickets?filter=new_and_my_open&page={page}&per_page=100&include=requester")
+                    batch = d.get("tickets") or []
+                    if not batch:
+                        break
+                    for t in batch:
+                        if str(t.get("responder_id")) == str(agent_id):
+                            if not status or t.get("status") == status:
+                                tickets.append(t)
 
             if not tickets:
-                status_label = STATUS.get(status, str(status)) if status else "tous statuts"
-                return [TextContent(type="text", text=f"Aucun ticket trouvé pour l'agent {agent_id} ({status_label}).")]
+                agent_name  = AGENTS.get(agent_id, f"Agent#{agent_id}")
+                status_name = fmt_status(status) if status else "tous statuts"
+                return [TextContent(type="text", text=f"Aucun ticket trouvé pour {agent_name} ({status_name}).")]
 
+            agent_name  = AGENTS.get(agent_id, f"Agent#{agent_id}")
+            status_name = fmt_status(status) if status else "tous statuts"
             lines = []
             for t in tickets:
                 req = t.get("requester") or {}
+                cf  = t.get("custom_fields") or {}
                 lines.append(
-                    f"#{t['id']} | {STATUS.get(t.get('status'),'?')} | {PRIO.get(t.get('priority'),'?')} | "
-                    f"Workspace:{fmt(t.get('workspace_id'))} | "
-                    f"Demandeur:{req.get('name', fmt(t.get('requester_id')))} | "
+                    f"#{t['id']} | {fmt_status(t.get('status'))} | {fmt_prio(t.get('priority'))} | "
+                    f"Workspace:{fmt_workspace(t.get('workspace_id'))} | "
+                    f"Demandeur:{req.get('name','—')} | "
+                    f"RDV:{cf.get('date_heure_rdv','—')} | "
                     f"{t.get('subject','')} | {safe_date(t.get('created_at'),10)}"
                 )
-            status_label = STATUS.get(status, str(status)) if status else "tous statuts"
             return [TextContent(type="text", text=
-                f"Agent {agent_id} — {status_label} — {len(tickets)} ticket(s) :\n{'─'*60}\n" + "\n".join(lines)
+                f"{agent_name} — {status_name} — {len(tickets)} ticket(s) :\n{'─'*60}\n" + "\n".join(lines)
             )]
 
         # ── get_ticket ────────────────────────────────────────────────────────
@@ -369,20 +450,22 @@ async def call_tool(name: str, arguments: dict):
             data   = await fs("GET", f"tickets/{arguments['id']}?include=requester,stats,tags")
             t      = data.get("ticket") or data
             stats  = t.get("stats") or {}
-            custom = t.get("custom_fields") or {}
+            cf     = t.get("custom_fields") or {}
             tags   = fmt(t.get("tags", []))
-            custom_lines = "\n".join([f"  {k}: {fmt(v)}" for k, v in custom.items()]) or "  Aucun"
+            custom_lines = "\n".join([f"  {k}: {fmt(v)}" for k, v in cf.items()]) or "  Aucun"
             text = (
                 f"{'═'*60}\n"
                 f"TICKET #{t.get('id')}\n"
                 f"{'═'*60}\n"
                 f"Sujet              : {fmt(t.get('subject'))}\n"
-                f"Statut             : {STATUS.get(t.get('status'), fmt(t.get('status')))}\n"
-                f"Priorité           : {PRIO.get(t.get('priority'), fmt(t.get('priority')))}\n"
+                f"Statut             : {fmt_status(t.get('status'))}\n"
+                f"Priorité           : {fmt_prio(t.get('priority'))}\n"
                 f"Type               : {fmt(t.get('type'))}\n"
-                f"Source             : {SOURCE.get(t.get('source'), fmt(t.get('source')))}\n"
-                f"Workspace          : {fmt(t.get('workspace_id'))}\n"
-                f"Agent assigné      : {fmt(t.get('responder_id'))}\n"
+                f"Source             : {fmt_source(t.get('source'))}\n"
+                f"Workspace          : {fmt_workspace(t.get('workspace_id'))}\n"
+                f"Agent assigné      : {fmt_agent(t.get('responder_id'))}\n"
+                f"Créateur ticket    : {fmt_agent(cf.get('lf_createur_du_ticket'))}\n"
+                f"Technicien initial : {fmt_agent(cf.get('lf_agent_initial'))}\n"
                 f"Groupe             : {fmt(t.get('group_id'))}\n"
                 f"Demandeur ID       : {fmt(t.get('requester_id'))}\n"
                 f"Email              : {fmt(t.get('email'))}\n"
@@ -392,7 +475,6 @@ async def call_tool(name: str, arguments: dict):
                 f"Tags               : {tags}\n"
                 f"Spam               : {fmt(t.get('spam'))}\n"
                 f"Escaladé           : {fmt(t.get('is_escalated'))}\n"
-                f"Supprimé           : {fmt(t.get('deleted'))}\n"
                 f"Créé le            : {safe_date(t.get('created_at'))}\n"
                 f"Mis à jour         : {safe_date(t.get('updated_at'))}\n"
                 f"Échéance           : {safe_date(t.get('due_by'))}\n"
@@ -422,10 +504,11 @@ async def call_tool(name: str, arguments: dict):
                 return [TextContent(type="text", text="Aucune conversation sur ce ticket.")]
             lines = []
             for c in convs:
-                kind = "NOTE PRIVÉE" if c.get("private") else ("EMAIL" if c.get("source") == 0 else "NOTE")
-                body = c.get("body_text") or c.get("body") or ""
+                kind   = "NOTE PRIVÉE" if c.get("private") else ("EMAIL" if c.get("source") == 0 else "NOTE")
+                auteur = fmt_agent(c.get("user_id"))
+                body   = c.get("body_text") or c.get("body") or ""
                 lines.append(
-                    f"[{kind}] {safe_date(c.get('created_at'))} — Agent:{fmt(c.get('user_id'))}\n"
+                    f"[{kind}] {safe_date(c.get('created_at'))} — {auteur}\n"
                     f"{body[:800]}\n{'─'*40}"
                 )
             return [TextContent(type="text", text=f"{len(convs)} conversation(s) :\n\n" + "\n".join(lines))]
@@ -454,8 +537,8 @@ async def call_tool(name: str, arguments: dict):
             if not tickets:
                 return [TextContent(type="text", text=f"Aucun ticket trouvé pour « {q} ».")]
             lines = [
-                f"#{t['id']} | {STATUS.get(t.get('status'),'?')} | {PRIO.get(t.get('priority'),'?')} | "
-                f"Agent:{fmt(t.get('responder_id'))} | Workspace:{fmt(t.get('workspace_id'))} | "
+                f"#{t['id']} | {fmt_status(t.get('status'))} | {fmt_prio(t.get('priority'))} | "
+                f"Agent:{fmt_agent(t.get('responder_id'))} | Workspace:{fmt_workspace(t.get('workspace_id'))} | "
                 f"{t.get('subject','')} | {safe_date(t.get('created_at'),10)}"
                 for t in tickets
             ]
@@ -477,8 +560,9 @@ async def call_tool(name: str, arguments: dict):
             t    = data.get("ticket") or data
             return [TextContent(type="text", text=
                 f"Ticket créé : #{t.get('id')} — {t.get('subject')}\n"
-                f"Workspace : {fmt(t.get('workspace_id'))}\n"
-                f"Agent     : {fmt(t.get('responder_id'))}"
+                f"Statut    : {fmt_status(t.get('status'))}\n"
+                f"Workspace : {fmt_workspace(t.get('workspace_id'))}\n"
+                f"Agent     : {fmt_agent(t.get('responder_id'))}"
             )]
 
         # ── update_ticket ─────────────────────────────────────────────────────
@@ -491,7 +575,15 @@ async def call_tool(name: str, arguments: dict):
                 await fs("POST", f"tickets/{tid}/notes", {"body": arguments["note"], "private": False})
             if arguments.get("private_note"):
                 await fs("POST", f"tickets/{tid}/notes", {"body": arguments["private_note"], "private": True})
-            return [TextContent(type="text", text=f"Ticket #{tid} mis à jour.")]
+            actions = []
+            if payload:
+                for k, v in payload.items():
+                    if k == "status":      actions.append(f"statut → {fmt_status(v)}")
+                    elif k == "priority":  actions.append(f"priorité → {fmt_prio(v)}")
+                    elif k == "responder_id": actions.append(f"agent → {fmt_agent(v)}")
+            if arguments.get("note"):         actions.append("note publique ajoutée")
+            if arguments.get("private_note"): actions.append("note privée ajoutée")
+            return [TextContent(type="text", text=f"Ticket #{tid} mis à jour : {', '.join(actions)}.")]
 
         # ── list_workspaces ───────────────────────────────────────────────────
         elif name == "list_workspaces":
@@ -499,16 +591,17 @@ async def call_tool(name: str, arguments: dict):
                 data       = await fs("GET", "workspaces")
                 workspaces = data.get("workspaces") or []
                 if not workspaces:
-                    raw = await fs_raw("GET", "workspaces")
-                    return [TextContent(type="text", text=f"Réponse brute :\n{raw[:1000]}")]
+                    # Retourner le référentiel connu
+                    lines = [f"#{k} | {v}" for k, v in WORKSPACE.items()]
+                    return [TextContent(type="text", text="Workspaces Supergeek :\n" + "\n".join(lines))]
                 lines = [
-                    f"#{w.get('id')} | {w.get('name','?')} | Actif:{fmt(w.get('active'))} | "
-                    f"Description:{fmt(w.get('description'))}"
+                    f"#{w.get('id')} | {WORKSPACE.get(w.get('id'), w.get('name','?'))} | Actif:{fmt(w.get('active'))}"
                     for w in workspaces
                 ]
                 return [TextContent(type="text", text=f"{len(workspaces)} workspace(s) :\n" + "\n".join(lines))]
-            except Exception as e:
-                return [TextContent(type="text", text=f"Erreur workspaces : {str(e)}")]
+            except Exception:
+                lines = [f"#{k} | {v}" for k, v in WORKSPACE.items()]
+                return [TextContent(type="text", text="Workspaces Supergeek :\n" + "\n".join(lines))]
 
         # ── list_contacts ─────────────────────────────────────────────────────
         elif name == "list_contacts":
@@ -562,20 +655,31 @@ async def call_tool(name: str, arguments: dict):
             agents = data.get("agents") or []
             if not agents:
                 return [TextContent(type="text", text="Aucun agent trouvé.")]
-            lines = [
-                f"#{a['id']} | {a.get('first_name','')} {a.get('last_name','')} | "
-                f"{a.get('email','—')} | Actif:{fmt(a.get('active'))} | Disponible:{fmt(a.get('available'))}"
-                for a in agents
-            ]
+            lines = []
+            for a in agents:
+                aid  = a.get('id')
+                name_known = AGENTS.get(aid, "")
+                poste = ""
+                if name_known in ["Alice","Axel","Cedric","Jason","Jessica","Léa","Sam","Samuel"]: poste = "Technicien"
+                elif name_known in ["Anaïs","Laeticia","Shelly"]: poste = "Commercial"
+                elif name_known == "James": poste = "Responsable B2B"
+                elif name_known == "Yannick": poste = "Superviseur"
+                elif name_known == "Michel": poste = "Founder"
+                elif name_known == "Khadijah": poste = "HR"
+                lines.append(
+                    f"#{aid} | {a.get('first_name','')} {a.get('last_name','')} | "
+                    f"{a.get('email','—')} | {poste} | Dispo:{fmt(a.get('available'))}"
+                )
             return [TextContent(type="text", text="\n".join(lines))]
 
         # ── get_agent ─────────────────────────────────────────────────────────
         elif name == "get_agent":
             data = await fs("GET", f"agents/{arguments['id']}")
             a    = data.get("agent") or data
+            aid  = a.get('id')
             text = (
                 f"{'═'*60}\n"
-                f"AGENT #{a.get('id')}\n"
+                f"AGENT #{aid} — {AGENTS.get(aid, 'Inconnu')}\n"
                 f"{'═'*60}\n"
                 f"Nom            : {a.get('first_name','')} {a.get('last_name','')}\n"
                 f"Email          : {fmt(a.get('email'))}\n"
@@ -599,7 +703,7 @@ async def call_tool(name: str, arguments: dict):
                 return [TextContent(type="text", text="Aucun projet trouvé.")]
             lines = [
                 f"#{pj['id']} | {pj.get('name','?')} | Statut:{pj.get('status','—')} | "
-                f"Manager:{pj.get('manager_id','—')} | "
+                f"Manager:{fmt_agent(pj.get('manager_id'))} | "
                 f"Début:{safe_date(pj.get('start_date'),10)} | Fin:{safe_date(pj.get('end_date'),10)}"
                 for pj in projects
             ]
@@ -617,7 +721,7 @@ async def call_tool(name: str, arguments: dict):
                 f"Description    : {fmt(pj.get('description'))}\n"
                 f"Statut         : {fmt(pj.get('status'))}\n"
                 f"Priorité       : {fmt(pj.get('priority'))}\n"
-                f"Manager        : {fmt(pj.get('manager_id'))}\n"
+                f"Manager        : {fmt_agent(pj.get('manager_id'))}\n"
                 f"Date début     : {safe_date(pj.get('start_date'),10)}\n"
                 f"Date fin       : {safe_date(pj.get('end_date'),10)}\n"
                 f"Créé le        : {safe_date(pj.get('created_at'))}\n"
@@ -633,7 +737,7 @@ async def call_tool(name: str, arguments: dict):
                 return [TextContent(type="text", text="Aucune tâche sur ce ticket.")]
             lines = [
                 f"#{t['id']} | {t.get('title','?')} | Statut:{t.get('status','—')} | "
-                f"Agent:{t.get('agent_id','—')} | Échéance:{safe_date(t.get('due_date'),10)}\n"
+                f"Agent:{fmt_agent(t.get('agent_id'))} | Échéance:{safe_date(t.get('due_date'),10)}\n"
                 f"  Description: {t.get('description','—')[:200]}"
                 for t in tasks
             ]
@@ -647,7 +751,7 @@ async def call_tool(name: str, arguments: dict):
                 return [TextContent(type="text", text="Aucune tâche sur ce projet.")]
             lines = [
                 f"#{t['id']} | {t.get('title','?')} | Statut:{t.get('status','—')} | "
-                f"Assigné:{t.get('assignee_id','—')} | Échéance:{safe_date(t.get('due_date'),10)}"
+                f"Assigné:{fmt_agent(t.get('assignee_id'))} | Échéance:{safe_date(t.get('due_date'),10)}"
                 for t in tasks
             ]
             return [TextContent(type="text", text=f"{len(tasks)} tâche(s) :\n" + "\n".join(lines))]
@@ -662,7 +766,7 @@ async def call_tool(name: str, arguments: dict):
                 return [TextContent(type="text", text="Aucun asset trouvé.")]
             lines = [
                 f"#{a['id']} | {a.get('name','?')} | Type:{a.get('asset_type_id','—')} | "
-                f"Utilisateur:{a.get('user_id','—')} | État:{a.get('state','—')}"
+                f"Utilisateur:{fmt_agent(a.get('user_id'))} | État:{a.get('state','—')}"
                 for a in assets
             ]
             return [TextContent(type="text", text=f"{len(assets)} asset(s) :\n" + "\n".join(lines))]
@@ -676,17 +780,17 @@ async def call_tool(name: str, arguments: dict):
             by_agent     = {}
             by_workspace = {}
             for t in tickets:
-                s  = STATUS.get(t.get('status'), str(t.get('status')))
-                p  = PRIO.get(t.get('priority'), str(t.get('priority')))
-                a  = str(t.get('responder_id') or 'Non assigné')
-                ws = str(t.get('workspace_id') or '—')
+                s  = fmt_status(t.get('status'))
+                p  = fmt_prio(t.get('priority'))
+                a  = fmt_agent(t.get('responder_id'))
+                ws = fmt_workspace(t.get('workspace_id'))
                 by_status[s]     = by_status.get(s, 0) + 1
                 by_priority[p]   = by_priority.get(p, 0) + 1
                 by_agent[a]      = by_agent.get(a, 0) + 1
                 by_workspace[ws] = by_workspace.get(ws, 0) + 1
             lines = [
                 f"{'═'*50}",
-                "STATISTIQUES FRESHSERVICE",
+                "STATISTIQUES FRESHSERVICE — SUPERGEEK",
                 f"{'═'*50}",
                 f"Tickets analysés : {len(tickets)}",
                 f"{'─'*50}",
@@ -697,10 +801,10 @@ async def call_tool(name: str, arguments: dict):
                 *[f"  {k}: {v}" for k, v in sorted(by_priority.items(), key=lambda x: -x[1])],
                 f"{'─'*50}",
                 "PAR WORKSPACE :",
-                *[f"  Workspace {k}: {v}" for k, v in sorted(by_workspace.items(), key=lambda x: -x[1])],
+                *[f"  {k}: {v}" for k, v in sorted(by_workspace.items(), key=lambda x: -x[1])],
                 f"{'─'*50}",
                 "PAR AGENT (top 10) :",
-                *[f"  Agent {k}: {v} ticket(s)" for k, v in sorted(by_agent.items(), key=lambda x: -x[1])[:10]],
+                *[f"  {k}: {v} ticket(s)" for k, v in sorted(by_agent.items(), key=lambda x: -x[1])[:10]],
             ]
             return [TextContent(type="text", text="\n".join(lines))]
 
@@ -726,7 +830,7 @@ async def health(request: Request):
         "domain":   FS_DOMAIN,
         "auth_set": bool(FS_API_KEY),
         "tools":    20,
-        "version":  "4.0"
+        "version":  "5.0"
     })
 
 app = Starlette(
