@@ -104,27 +104,77 @@ def fmt(val):
 
 def fmt_agent(agent_id):
     if not agent_id: return "—"
-    return AGENTS.get(int(agent_id), f"Agent#{agent_id}")
+    try: return AGENTS.get(int(agent_id), f"Agent#{agent_id}")
+    except: return str(agent_id)
 
 def fmt_status(code):
     if not code: return "—"
-    return STATUS.get(int(code), f"Statut#{code}")
+    try: return STATUS.get(int(code), f"Statut#{code}")
+    except: return str(code)
 
 def fmt_prio(code):
     if not code: return "—"
-    return PRIO.get(int(code), f"Priorité#{code}")
+    try: return PRIO.get(int(code), f"Priorité#{code}")
+    except: return str(code)
 
 def fmt_workspace(code):
     if not code: return "—"
-    return WORKSPACE.get(int(code), f"Workspace#{code}")
+    try: return WORKSPACE.get(int(code), f"Workspace#{code}")
+    except: return str(code)
 
 def fmt_source(code):
     if not code: return "—"
-    return SOURCE.get(int(code), f"Source#{code}")
+    try: return SOURCE.get(int(code), f"Source#{code}")
+    except: return str(code)
 
 def safe_date(val, length=19):
     if not val: return "—"
     return str(val)[:length]
+
+async def fetch_all_tickets_for_agent(agent_id: int, status: int = None) -> list:
+    """
+    Parcourt tous les filtres Freshservice pour trouver les tickets d'un agent.
+    Inclut new_and_my_open, watching, et une recherche directe par ID de ticket récent.
+    """
+    seen = set()
+    results = []
+
+    # 1. Essai via recherche avancée (endpoint filter)
+    try:
+        query = f'responder_id:{agent_id}'
+        if status:
+            query += f' AND status:{status}'
+        data = await fs("GET", f'tickets/filter?query="{query}"&per_page=100&include=requester')
+        for t in (data.get("tickets") or []):
+            if t["id"] not in seen:
+                seen.add(t["id"])
+                results.append(t)
+        if results:
+            return results
+    except Exception:
+        pass
+
+    # 2. Fallback : parcourir tous les filtres disponibles sur plusieurs pages
+    for filtre in ["new_and_my_open", "watching", "spam", "deleted"]:
+        for page in range(1, 11):
+            try:
+                d = await fs("GET", f"tickets?filter={filtre}&page={page}&per_page=100&include=requester")
+                batch = d.get("tickets") or []
+                if not batch:
+                    break
+                for t in batch:
+                    if str(t.get("responder_id")) == str(agent_id):
+                        if t["id"] not in seen:
+                            seen.add(t["id"])
+                            results.append(t)
+            except Exception:
+                break
+
+    # 3. Filtre par statut si demandé
+    if status:
+        results = [t for t in results if t.get("status") == status]
+
+    return results
 
 # ── Serveur MCP ───────────────────────────────────────────────────────────────
 server = Server("freshservice-mcp")
@@ -152,8 +202,8 @@ async def list_tools():
         Tool(
             name="search_tickets_by_agent",
             description=(
-                "Rechercher tous les tickets assignés à un agent par son nom ou ID, "
-                "avec filtre optionnel par statut. "
+                "Rechercher tous les tickets assignés à un agent, tous statuts confondus "
+                "(y compris RDV Planifié, Contact injoignable, Attente tiers, etc.). "
                 "Agents: Alice=37002903654, Anaïs=37002930870, Axel=37002903655, "
                 "Cedric=37002903652, James=37000266099, Jason=37002960378, "
                 "Jessica=37002903656, Khadijah=37002933996, Laeticia=37003614701, "
@@ -167,7 +217,7 @@ async def list_tools():
                 "type": "object",
                 "properties": {
                     "agent_id": {"type": "integer", "description": "ID de l'agent"},
-                    "status":   {"type": "integer", "description": "Code du statut (voir description)"},
+                    "status":   {"type": "integer", "description": "Optionnel — code du statut pour filtrer"},
                     "page":     {"type": "integer", "description": "Numéro de page (défaut: 1)"},
                     "per_page": {"type": "integer", "description": "max 100 (défaut: 100)"}
                 },
@@ -286,7 +336,7 @@ async def list_tools():
         # ── AGENTS ───────────────────────────────────────────────────────────
         Tool(
             name="list_agents",
-            description="Lister tous les agents avec nom, email, disponibilité. Agents connus: Alice, Anaïs, Axel, Cedric, James, Jason, Jessica, Khadijah, Laeticia, Léa, Michel, Sam, Samuel, Shelly, Superviseur, Yannick.",
+            description="Lister tous les agents Supergeek avec nom, poste, email, disponibilité.",
             inputSchema={"type": "object", "properties": {}}
         ),
         Tool(
@@ -386,49 +436,29 @@ async def call_tool(name: str, arguments: dict):
             lines = []
             for t in tickets:
                 req = t.get("requester") or {}
+                cf  = t.get("custom_fields") or {}
                 lines.append(
                     f"#{t['id']} | {fmt_status(t.get('status'))} | {fmt_prio(t.get('priority'))} | "
                     f"Agent:{fmt_agent(t.get('responder_id'))} | "
-                    f"Créateur:{fmt_agent(t.get('custom_fields', {}).get('lf_createur_du_ticket'))} | "
+                    f"Créateur:{fmt_agent(cf.get('lf_createur_du_ticket'))} | "
                     f"Workspace:{fmt_workspace(t.get('workspace_id'))} | "
-                    f"Demandeur:{req.get('name', '—')} | "
+                    f"Demandeur:{req.get('name','—')} | "
                     f"{t.get('subject','')} | {safe_date(t.get('created_at'),10)}"
                 )
             return [TextContent(type="text", text=f"Total : {len(tickets)} tickets\n{'─'*60}\n" + "\n".join(lines))]
 
         # ── search_tickets_by_agent ───────────────────────────────────────────
         elif name == "search_tickets_by_agent":
-            agent_id = arguments["agent_id"]
-            status   = arguments.get("status")
-            p        = arguments.get("page", 1)
-            pp       = arguments.get("per_page", 100)
+            agent_id   = arguments["agent_id"]
+            status     = arguments.get("status")
+            agent_name = AGENTS.get(agent_id, f"Agent#{agent_id}")
 
-            query = f'responder_id:{agent_id}'
-            if status:
-                query += f' AND status:{status}'
-
-            try:
-                data    = await fs("GET", f'tickets/filter?query="{query}"&page={p}&per_page={pp}&include=requester')
-                tickets = data.get("tickets") or []
-            except Exception:
-                # Fallback : parcourir toutes les pages
-                tickets = []
-                for page in range(1, 11):
-                    d = await fs("GET", f"tickets?filter=new_and_my_open&page={page}&per_page=100&include=requester")
-                    batch = d.get("tickets") or []
-                    if not batch:
-                        break
-                    for t in batch:
-                        if str(t.get("responder_id")) == str(agent_id):
-                            if not status or t.get("status") == status:
-                                tickets.append(t)
+            tickets = await fetch_all_tickets_for_agent(agent_id, status)
 
             if not tickets:
-                agent_name  = AGENTS.get(agent_id, f"Agent#{agent_id}")
                 status_name = fmt_status(status) if status else "tous statuts"
                 return [TextContent(type="text", text=f"Aucun ticket trouvé pour {agent_name} ({status_name}).")]
 
-            agent_name  = AGENTS.get(agent_id, f"Agent#{agent_id}")
             status_name = fmt_status(status) if status else "tous statuts"
             lines = []
             for t in tickets:
@@ -576,32 +606,18 @@ async def call_tool(name: str, arguments: dict):
             if arguments.get("private_note"):
                 await fs("POST", f"tickets/{tid}/notes", {"body": arguments["private_note"], "private": True})
             actions = []
-            if payload:
-                for k, v in payload.items():
-                    if k == "status":      actions.append(f"statut → {fmt_status(v)}")
-                    elif k == "priority":  actions.append(f"priorité → {fmt_prio(v)}")
-                    elif k == "responder_id": actions.append(f"agent → {fmt_agent(v)}")
+            for k, v in payload.items():
+                if k == "status":       actions.append(f"statut → {fmt_status(v)}")
+                elif k == "priority":   actions.append(f"priorité → {fmt_prio(v)}")
+                elif k == "responder_id": actions.append(f"agent → {fmt_agent(v)}")
             if arguments.get("note"):         actions.append("note publique ajoutée")
             if arguments.get("private_note"): actions.append("note privée ajoutée")
-            return [TextContent(type="text", text=f"Ticket #{tid} mis à jour : {', '.join(actions)}.")]
+            return [TextContent(type="text", text=f"Ticket #{tid} mis à jour : {', '.join(actions) or 'aucun changement'}.")]
 
         # ── list_workspaces ───────────────────────────────────────────────────
         elif name == "list_workspaces":
-            try:
-                data       = await fs("GET", "workspaces")
-                workspaces = data.get("workspaces") or []
-                if not workspaces:
-                    # Retourner le référentiel connu
-                    lines = [f"#{k} | {v}" for k, v in WORKSPACE.items()]
-                    return [TextContent(type="text", text="Workspaces Supergeek :\n" + "\n".join(lines))]
-                lines = [
-                    f"#{w.get('id')} | {WORKSPACE.get(w.get('id'), w.get('name','?'))} | Actif:{fmt(w.get('active'))}"
-                    for w in workspaces
-                ]
-                return [TextContent(type="text", text=f"{len(workspaces)} workspace(s) :\n" + "\n".join(lines))]
-            except Exception:
-                lines = [f"#{k} | {v}" for k, v in WORKSPACE.items()]
-                return [TextContent(type="text", text="Workspaces Supergeek :\n" + "\n".join(lines))]
+            lines = [f"#{k} | {v}" for k, v in WORKSPACE.items()]
+            return [TextContent(type="text", text="Workspaces Supergeek :\n" + "\n".join(lines))]
 
         # ── list_contacts ─────────────────────────────────────────────────────
         elif name == "list_contacts":
@@ -655,20 +671,20 @@ async def call_tool(name: str, arguments: dict):
             agents = data.get("agents") or []
             if not agents:
                 return [TextContent(type="text", text="Aucun agent trouvé.")]
+            POSTES = {
+                "Alice":"Technicien","Axel":"Technicien","Cedric":"Technicien",
+                "Jason":"Technicien","Jessica":"Technicien","Léa":"Technicien","Sam":"Technicien","Samuel":"Technicien",
+                "Anaïs":"Commercial","Laeticia":"Commercial","Shelly":"Commercial",
+                "James":"Responsable B2B","Yannick":"Superviseur",
+                "Michel":"Founder","Khadijah":"HR","Superviseur":"Associé",
+            }
             lines = []
             for a in agents:
-                aid  = a.get('id')
-                name_known = AGENTS.get(aid, "")
-                poste = ""
-                if name_known in ["Alice","Axel","Cedric","Jason","Jessica","Léa","Sam","Samuel"]: poste = "Technicien"
-                elif name_known in ["Anaïs","Laeticia","Shelly"]: poste = "Commercial"
-                elif name_known == "James": poste = "Responsable B2B"
-                elif name_known == "Yannick": poste = "Superviseur"
-                elif name_known == "Michel": poste = "Founder"
-                elif name_known == "Khadijah": poste = "HR"
+                aid        = a.get('id')
+                prenom     = AGENTS.get(aid, f"{a.get('first_name','')} {a.get('last_name','')}".strip())
+                poste      = POSTES.get(prenom, "—")
                 lines.append(
-                    f"#{aid} | {a.get('first_name','')} {a.get('last_name','')} | "
-                    f"{a.get('email','—')} | {poste} | Dispo:{fmt(a.get('available'))}"
+                    f"#{aid} | {prenom} | {a.get('email','—')} | {poste} | Dispo:{fmt(a.get('available'))}"
                 )
             return [TextContent(type="text", text="\n".join(lines))]
 
@@ -830,7 +846,7 @@ async def health(request: Request):
         "domain":   FS_DOMAIN,
         "auth_set": bool(FS_API_KEY),
         "tools":    20,
-        "version":  "5.0"
+        "version":  "6.0"
     })
 
 app = Starlette(
